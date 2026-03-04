@@ -1,0 +1,65 @@
+import pytest
+from flask import Flask
+
+import app.routes.events as module  # <- dopasuj ścieżkę do pliku z events_blueprint
+
+
+@pytest.fixture
+def app(monkeypatch):
+    """
+    Create a minimal Flask app and register the events blueprint,
+    with @authorize() replaced by a no-op decorator for testing.
+    """
+    # 1) authorize() -> decorator, który nic nie robi (nie blokuje endpointów)
+    def noop_authorize():
+        def decorator(fn):
+            return fn
+        return decorator
+
+    monkeypatch.setattr(module, "authorize", noop_authorize)
+
+    # 2) Tworzymy app i rejestrujemy blueprint
+    app = Flask(__name__)
+    app.config["TESTING"] = True
+    app.register_blueprint(module.events_blueprint)
+
+    return app
+
+
+@pytest.fixture
+def client(app):
+    return app.test_client()
+
+
+def test_get_events_route_calls_events_get(monkeypatch, client):
+    expected = [{"id": 1, "title": "A"}]
+
+    # podmieniamy funkcję, którą route woła
+    monkeypatch.setattr(module, "events_get", lambda: expected)
+
+    resp = client.get("/api/events/")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == expected
+
+
+def test_add_event_route_uses_g_user_id_and_request_json(monkeypatch, client):
+    expected = {"id": 10, "title": "X"}
+
+    # wstrzykujemy g.user_id przed requestem
+    @client.application.before_request
+    def _inject_user():
+        from flask import g
+        g.user_id = 555
+
+    def fake_events_add(organizer_id, event_data):
+        assert organizer_id == 555
+        assert event_data == {"title": "X"}
+        return expected
+
+    monkeypatch.setattr(module, "events_add", fake_events_add)
+
+    resp = client.post("/api/events/", json={"title": "X"})
+
+    assert resp.status_code == 200
+    assert resp.get_json() == expected
